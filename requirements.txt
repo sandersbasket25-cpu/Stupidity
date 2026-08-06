@@ -1,4 +1,3 @@
-﻿pyrogram
-pytgcalls>=2.0.0
+pyrogram
+pytgcalls
 tgcrypto
-ntgcalls
