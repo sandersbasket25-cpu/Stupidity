@@ -6,42 +6,39 @@ import pyrogram.errors
 import pyrogram.raw.types
 import pyrogram.raw.functions.phone as phone_funcs
 
-# --- ХИРУРГИЧЕСКИЙ ПАТЧ (Senior Hotfix) ---
-def apply_ultra_patches():
-    log("[SYSTEM] Применение патчей совместимости...")
-    
-    # 1. Исправляем конструктор JoinGroupCall (лечит ошибку с public_key)
-    original_join = phone_funcs.JoinGroupCall
-    def patched_join_group_call(*args, **kwargs):
-        # Удаляем public_key, если он прилетел из ntgcalls
-        kwargs.pop("public_key", None)
-        return original_chat_join(*args, **kwargs) if 'original_chat_join' in globals() else original_join(*args, **kwargs)
-    
-    phone_funcs.JoinGroupCall = patched_join_group_call
-
-    # 2. Патчим отсутствующие классы ошибок
-    error_map = {
-        "GroupcallForbidden": "GroupCallForbidden", 
-        "GroupcallInvalid": "GroupCallInvalid",
-        "GroupcallAlreadyJoined": "GroupCallAlreadyJoined"
-    }
-    for target, source in error_map.items():
-        if not hasattr(pyrogram.errors, target):
-            err = getattr(pyrogram.errors, source, type(target, (Exception,), {}))
-            setattr(pyrogram.errors, target, err)
-
-    # 3. Патчим отсутствующие типы Raw API
-    missing_types = ["InputGroupCallSlug", "PhoneCallDiscardReasonMigrateConferenceCall"]
-    for t in missing_types:
-        if not hasattr(pyrogram.raw.types, t):
-            setattr(pyrogram.raw.types, t, type(t, (), {"ID": 0x0}))
-    
-    log("[SYSTEM] Патчи применены успешно.")
-
 def log(text):
     print(text, flush=True)
 
-# ----------------------------------------
+# --- УЛЬТРА-ПАТЧИ СОВМЕСТИМОСТИ (Senior Fix) ---
+log("[SYSTEM] Применение патчей...")
+
+# 1. Исправляем конструктор JoinGroupCall (удаляем лишний public_key)
+# В Pyrogram это класс, поэтому мы патчим его конструктор
+original_join_class = phone_funcs.JoinGroupCall
+def patched_join_constructor(*args, **kwargs):
+    kwargs.pop("public_key", None)
+    return original_join_class(*args, **kwargs)
+phone_funcs.JoinGroupCall = patched_join_constructor
+
+# 2. Патчим отсутствующие классы ошибок
+error_map = {
+    "GroupcallForbidden": "GroupCallForbidden", 
+    "GroupcallInvalid": "GroupCallInvalid",
+    "GroupcallAlreadyJoined": "GroupCallAlreadyJoined"
+}
+for target, source in error_map.items():
+    if not hasattr(pyrogram.errors, target):
+        err = getattr(pyrogram.errors, source, type(target, (Exception,), {}))
+        setattr(pyrogram.errors, target, err)
+
+# 3. Патчим Raw API типы
+if not hasattr(pyrogram.raw.types, "InputGroupCallSlug"):
+    setattr(pyrogram.raw.types, "InputGroupCallSlug", type("InputGroupCallSlug", (), {"ID": 0x0}))
+if not hasattr(pyrogram.raw.types, "PhoneCallDiscardReasonMigrateConferenceCall"):
+    setattr(pyrogram.raw.types, "PhoneCallDiscardReasonMigrateConferenceCall", type("PhoneCallDiscardReasonMigrateConferenceCall", (), {"ID": 0x0}))
+
+log("[SYSTEM] Патчи применены.")
+# -----------------------------------------------
 
 from pyrogram import Client, idle
 from pytgcalls import PyTgCalls
@@ -56,14 +53,15 @@ async def process_msg(message):
     global last_processed_id
     if message.id <= last_processed_id:
         return
-    
     last_processed_id = message.id
-    text = (message.text or message.caption or "").lower().strip()
     
-    # Мы убрали фильтр админов, ловим всё
+    text = (message.text or message.caption or "").lower().strip()
+    if not text.startswith("/play") and not text.startswith("/stop"):
+        return
+
+    log(f"[INCOMING] Команда: {text}")
+
     if text.startswith("/play"):
-        log(f"[POLL] Команда /play от {message.from_user.id if message.from_user else 'User'}")
-        
         video_msg = None
         if message.video:
             video_msg = message
@@ -74,20 +72,16 @@ async def process_msg(message):
             await app.send_message(config.CHAT, "❌ Ответь на видео этой командой!")
             return
 
-        status = await app.send_message(config.CHAT, "⏳ Качаю видео на Railway...")
+        status = await app.send_message(config.CHAT, "⏳ Скачиваю видео...")
         path = os.path.join(config.DOWNLOAD_DIR, f"v_{video_msg.id}.mp4")
 
         try:
             file_path = await app.download_media(video_msg.video, file_name=path)
             await status.edit("🚀 Запускаю трансляцию...")
-            
-            # В v2.x API py-tgcalls
             await calls.play(config.CHAT, MediaStream(file_path))
-            await status.edit("✅ Трансляция запущена!")
-            
+            await status.edit("✅ Трансляция активна!")
         except Exception as e:
-            err = traceback.format_exc()
-            log(f"[ERROR] {err}")
+            log(f"[ERROR] {e}")
             await status.edit(f"🔴 Ошибка: {str(e)[:100]}")
 
     elif text.startswith("/stop"):
@@ -98,7 +92,7 @@ async def process_msg(message):
 
 async def poll_history():
     global last_processed_id
-    log("[SYSTEM] Цикл опроса запущен.")
+    log("[SYSTEM] Опрос истории запущен.")
     while True:
         try:
             async for message in app.get_chat_history(config.CHAT, limit=5):
@@ -106,18 +100,16 @@ async def poll_history():
             await app.read_chat_history(config.CHAT)
         except Exception as e:
             log(f"[POLL ERROR] {e}")
-        await asyncio.sleep(3)
+        await asyncio.sleep(4)
 
 async def main():
     global app, calls, last_processed_id
-    apply_ultra_patches()
     
     app = Client(
-        "railway_v11",
+        "railway_v12",
         api_id=config.API_ID,
         api_hash=config.API_HASH,
-        session_string=config.SESSION_STRING,
-        sleep_threshold=300
+        session_string=config.SESSION_STRING
     )
     
     calls = PyTgCalls(app)
@@ -126,10 +118,24 @@ async def main():
         await app.start()
         log("✅ Аккаунт подключен.")
 
+        # --- КРИТИЧЕСКИЙ ШАГ: ПРОГРЕВ ПИРОВ ---
+        log(f"Прогрев чата {config.CHAT}...")
+        found = False
+        async for dialog in app.get_dialogs(limit=100):
+            if dialog.chat.id == config.CHAT:
+                log(f"✅ Чат '{dialog.chat.title}' найден в диалогах и кеширован.")
+                found = True
+                break
+        
+        if not found:
+            log("⚠️ Чат не найден в последних 100 диалогах. Пытаюсь получить напрямую...")
+            await app.get_chat(config.CHAT)
+
+        # Теперь get_chat_history не выдаст Peer id invalid
         async for msg in app.get_chat_history(config.CHAT, limit=1):
             last_processed_id = msg.id
 
-        await app.send_message(config.CHAT, "🤖 Бот (V11 Fixed) запущен!")
+        await app.send_message(config.CHAT, "🤖 Бот (V12) онлайн!")
         await calls.start()
         
         asyncio.create_task(poll_history())
