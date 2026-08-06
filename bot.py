@@ -4,20 +4,23 @@ import traceback
 import sys
 import pyrogram.errors
 import pyrogram.raw.types
+from pyrogram.raw import types
 
 def log(text):
     print(text, flush=True)
 
-# --- ПАТЧИ (ОСТАВЛЯЕМ) ---
+# --- ПАТЧИ СОВМЕСТИМОСТИ ---
 error_map = {"GroupcallForbidden": "GroupCallForbidden", "GroupcallInvalid": "GroupCallInvalid"}
 for target, source in error_map.items():
     if not hasattr(pyrogram.errors, target):
         err = getattr(pyrogram.errors, source, type(target, (Exception,), {}))
         setattr(pyrogram.errors, target, err)
+
 if not hasattr(pyrogram.raw.types, "InputGroupCallSlug"):
     setattr(pyrogram.raw.types, "InputGroupCallSlug", type("InputGroupCallSlug", (), {"ID": 0x0}))
 if not hasattr(pyrogram.raw.types, "PhoneCallDiscardReasonMigrateConferenceCall"):
     setattr(pyrogram.raw.types, "PhoneCallDiscardReasonMigrateConferenceCall", type("PhoneCallDiscardReasonMigrateConferenceCall", (), {"ID": 0x0}))
+# ---------------------------
 
 from pyrogram import Client, filters, idle
 from pytgcalls import PyTgCalls
@@ -25,7 +28,7 @@ from pytgcalls.types import MediaStream
 import config
 
 app = Client(
-    "railway_session_v5", # Новая сессия для сброса кеша обновлений
+    "railway_final_v7", 
     api_id=config.API_ID,
     api_hash=config.API_HASH,
     session_string=config.SESSION_STRING
@@ -33,70 +36,81 @@ app = Client(
 
 calls = PyTgCalls(app)
 
-# ОБРАБОТЧИК: Ловим ВСЁ в этом чате
+# ОБРАБОТЧИК: УБРАНЫ ВСЕ ПРОВЕРКИ АДМИНОВ
 @app.on_message(filters.chat(config.CHAT))
-async def global_handler(client, message):
-    # Логируем в консоль Railway каждое сообщение, которое видит бот
-    user_id = message.from_user.id if message.from_user else "System/Unknown"
+async def on_group_message(client, message):
     text = message.text or ""
-    log(f"[RAW LOG] Сообщение от {user_id}: {text}")
+    log(f"[INCOMING] Сообщение: {text}")
 
-    # Ручной разбор команд
     if text.startswith("/play"):
-        log(f"[CHECK] Команда /play замечена!")
+        log("[ACTION] Попытка запуска видео...")
         
-        # Проверка прав (админ или сам юзербот)
-        is_admin = (message.from_user and message.from_user.id in config.ADMINS) or (message.from_user and message.from_user.is_self)
-        if not is_admin:
-            log(f"[CHECK] Отказано: юзер {user_id} не админ")
+        # Проверяем, есть ли видео в реплае
+        video_msg = message.reply_to_message
+        if not video_msg or not video_msg.video:
+            await message.reply("❌ Ответь этой командой на сообщение с видео!")
             return
 
-        if not message.reply_to_message or not message.reply_to_message.video:
-            await message.reply("❌ Ответь на видео!")
-            return
+        status = await message.reply("⏳ Railway скачивает видео...")
+        path = os.path.join(config.DOWNLOAD_DIR, f"v_{video_msg.id}.mp4")
 
-        status = await message.reply("⏳ Загрузка видео...")
-        path = os.path.join(config.DOWNLOAD_DIR, f"v_{message.id}.mp4")
         try:
-            # Используем message.reply_to_message напрямую для скачивания
-            file_path = await client.download_media(message.reply_to_message, file_name=path)
-            log(f"[FILE] Скачано: {file_path}")
-            await status.edit("🚀 Видео загружено. Запускаю поток...")
+            file_path = await client.download_media(video_msg.video, file_name=path)
+            log(f"[FILE] Видео скачано в {file_path}")
             
+            await status.edit("🚀 Запускаю трансляцию...")
             await calls.play(config.CHAT, MediaStream(file_path))
-            await status.edit("✅ Трансляция запущена!")
+            await status.edit("✅ Видео запущено! Приятного просмотра.")
+            
         except Exception as e:
             log(f"[ERROR] {e}")
-            await status.edit(f"🔴 Ошибка: {e}")
+            await status.edit(f"🔴 Ошибка: {str(e)[:100]}")
 
     elif text.startswith("/stop"):
-        if (message.from_user and message.from_user.id in config.ADMINS) or (message.from_user and message.from_user.is_self):
+        try:
             await calls.leave_call(config.CHAT)
             await message.reply("⏹ Остановлено.")
+        except:
+            pass
+
+# ФОНОВАЯ ЗАДАЧА: Принудительная синхронизация
+async def sync_loop():
+    while True:
+        try:
+            # Читаем историю (это заставляет Telegram "протолкнуть" новые сообщения)
+            await app.read_chat_history(config.CHAT)
+            # Каждые 10 секунд бот проверяет наличие обновлений
+            log("[SYNC] Сообщения прочитаны.")
+        except Exception as e:
+            log(f"[SYNC ERROR] {e}")
+        await asyncio.sleep(10)
 
 async def main():
-    log("--- ЗАПУСК СИСТЕМЫ ---")
+    log("--- ЗАПУСК СИСТЕМЫ V7 ---")
     try:
         await app.start()
-        log("✅ Аккаунт подключен.")
+        log("✅ Юзербот подключен.")
 
-        # Синхронизация чата
-        log(f"Синхронизация чата {config.CHAT}...")
+        # Синхронизация чата при старте
         async for dialog in app.get_dialogs(limit=20):
             if dialog.chat.id == config.CHAT:
                 log(f"✅ Чат '{dialog.chat.title}' синхронизирован.")
                 break
         
-        await app.send_message(config.CHAT, "🤖 Бот онлайн и слушает КАЖДОЕ сообщение.")
+        await app.send_message(config.CHAT, "🤖 Бот на Railway готов! Фильтры админов отключены. Жду /play")
 
         await calls.start()
-        log("--- ВСЁ ГОТОВО. ЖДУ СООБЩЕНИЙ В ГРУППЕ ---")
+        
+        # Запускаем цикл синхронизации
+        asyncio.create_task(sync_loop())
+        
         await idle()
     except Exception as e:
-        log(f"❌ Ошибка: {e}")
+        log(f"❌ Критическая ошибка: {e}")
         traceback.print_exc()
     finally:
-        await app.stop()
+        try: await app.stop()
+        except: pass
 
 if __name__ == "__main__":
     asyncio.run(main())
