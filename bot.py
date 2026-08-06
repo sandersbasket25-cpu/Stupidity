@@ -8,7 +8,7 @@ import pyrogram.raw.types
 def log(text):
     print(text, flush=True)
 
-# --- ПАТЧИ СОВМЕСТИМОСТИ (ОСТАВЛЯЕМ) ---
+# --- ПАТЧИ (ОСТАВЛЯЕМ) ---
 error_map = {"GroupcallForbidden": "GroupCallForbidden", "GroupcallInvalid": "GroupCallInvalid"}
 for target, source in error_map.items():
     if not hasattr(pyrogram.errors, target):
@@ -25,7 +25,7 @@ from pytgcalls.types import MediaStream
 import config
 
 app = Client(
-    "railway_session_v4",
+    "railway_session_v5", # Новая сессия для сброса кеша обновлений
     api_id=config.API_ID,
     api_hash=config.API_HASH,
     session_string=config.SESSION_STRING
@@ -33,74 +33,70 @@ app = Client(
 
 calls = PyTgCalls(app)
 
-# ОБРАБОТЧИК КОМАНД
-@app.on_message(filters.chat(config.CHAT) & filters.command(["play", "stop", "pause", "resume"]))
-async def command_handler(client, message):
-    # Команды принимает от админов или от самого себя
-    if not message.from_user: return
-    if message.from_user.id not in config.ADMINS and not message.from_user.is_self:
-        return
+# ОБРАБОТЧИК: Ловим ВСЁ в этом чате
+@app.on_message(filters.chat(config.CHAT))
+async def global_handler(client, message):
+    # Логируем в консоль Railway каждое сообщение, которое видит бот
+    user_id = message.from_user.id if message.from_user else "System/Unknown"
+    text = message.text or ""
+    log(f"[RAW LOG] Сообщение от {user_id}: {text}")
 
-    cmd = message.command[0].lower()
-    log(f"[ACTION] Команда {cmd} получена!")
+    # Ручной разбор команд
+    if text.startswith("/play"):
+        log(f"[CHECK] Команда /play замечена!")
+        
+        # Проверка прав (админ или сам юзербот)
+        is_admin = (message.from_user and message.from_user.id in config.ADMINS) or (message.from_user and message.from_user.is_self)
+        if not is_admin:
+            log(f"[CHECK] Отказано: юзер {user_id} не админ")
+            return
 
-    if cmd == "play":
         if not message.reply_to_message or not message.reply_to_message.video:
-            return await message.reply("❌ Ответь на видео!")
+            await message.reply("❌ Ответь на видео!")
+            return
 
         status = await message.reply("⏳ Загрузка видео...")
         path = os.path.join(config.DOWNLOAD_DIR, f"v_{message.id}.mp4")
         try:
+            # Используем message.reply_to_message напрямую для скачивания
             file_path = await client.download_media(message.reply_to_message, file_name=path)
-            await status.edit("🚀 Видео скачано. Запускаю трансляцию...")
+            log(f"[FILE] Скачано: {file_path}")
+            await status.edit("🚀 Видео загружено. Запускаю поток...")
+            
             await calls.play(config.CHAT, MediaStream(file_path))
-            await status.edit("✅ Видео играет!")
+            await status.edit("✅ Трансляция запущена!")
         except Exception as e:
             log(f"[ERROR] {e}")
             await status.edit(f"🔴 Ошибка: {e}")
 
-    elif cmd == "stop":
-        await calls.leave_call(config.CHAT)
-        await message.reply("⏹ Остановлено.")
+    elif text.startswith("/stop"):
+        if (message.from_user and message.from_user.id in config.ADMINS) or (message.from_user and message.from_user.is_self):
+            await calls.leave_call(config.CHAT)
+            await message.reply("⏹ Остановлено.")
 
 async def main():
-    log("--- СИСТЕМА ЗАПУСКАЕТСЯ ---")
+    log("--- ЗАПУСК СИСТЕМЫ ---")
     try:
         await app.start()
         log("✅ Аккаунт подключен.")
 
-        # --- КРИТИЧЕСКИЙ ШАГ: ПОИСК ЧАТА В ДИАЛОГАХ ---
-        log(f"Ищу чат {config.CHAT} в списке диалогов...")
-        target_chat = None
-        async for dialog in app.get_dialogs(limit=50):
+        # Синхронизация чата
+        log(f"Синхронизация чата {config.CHAT}...")
+        async for dialog in app.get_dialogs(limit=20):
             if dialog.chat.id == config.CHAT:
-                target_chat = dialog.chat
+                log(f"✅ Чат '{dialog.chat.title}' синхронизирован.")
                 break
         
-        if target_chat:
-            log(f"✅ Чат '{target_chat.title}' найден и синхронизирован!")
-            try:
-                await app.send_message(config.CHAT, "🤖 Бот на Railway успешно нашел чат и готов к работе!")
-            except Exception as e:
-                log(f"⚠️ Чат найден, но отправить сообщение не удалось: {e}")
-        else:
-            log("❌ ЧАТ НЕ НАЙДЕН!")
-            log("Юзербот (Krasavitsa) должен быть участником группы!")
-            # Выведем список чатов, чтобы понять, что он вообще видит
-            log("Список чатов, которые я вижу:")
-            async for dialog in app.get_dialogs(limit=10):
-                log(f" - [{dialog.chat.id}] {dialog.chat.title or 'Личка'}")
-            return # Останавливаем запуск, если чата нет
+        await app.send_message(config.CHAT, "🤖 Бот онлайн и слушает КАЖДОЕ сообщение.")
 
         await calls.start()
-        log("--- ВСЁ ГОТОВО. ЖДУ КОМАНД ---")
+        log("--- ВСЁ ГОТОВО. ЖДУ СООБЩЕНИЙ В ГРУППЕ ---")
         await idle()
     except Exception as e:
-        log(f"❌ Критическая ошибка: {e}")
+        log(f"❌ Ошибка: {e}")
         traceback.print_exc()
     finally:
-        try: await app.stop()
-        except: pass
+        await app.stop()
 
 if __name__ == "__main__":
     asyncio.run(main())
