@@ -4,25 +4,17 @@ import traceback
 import sys
 import pyrogram.errors
 
-# --- СУПЕР-ПАТЧ СОВМЕСТИМОСТИ ---
+# --- СУПЕР-ПАТЧ (БЕЗ ИЗМЕНЕНИЙ) ---
 import pyrogram.raw.types
-error_map = {
-    "GroupcallForbidden": "GroupCallForbidden", 
-    "GroupcallInvalid": "GroupCallInvalid",
-    "GroupcallAlreadyJoined": "GroupCallAlreadyJoined"
-}
+error_map = {"GroupcallForbidden": "GroupCallForbidden", "GroupcallInvalid": "GroupCallInvalid"}
 for target, source in error_map.items():
     if not hasattr(pyrogram.errors, target):
         err = getattr(pyrogram.errors, source, type(target, (Exception,), {}))
         setattr(pyrogram.errors, target, err)
-
-# Патчим типы данных для Py-TgCalls 2.3.x
 missing_types = ["InputGroupCallSlug", "PhoneCallDiscardReasonMigrateConferenceCall"]
 for t in missing_types:
     if not hasattr(pyrogram.raw.types, t):
         setattr(pyrogram.raw.types, t, type(t, (), {"ID": 0x0}))
-
-print("[SYSTEM] Патчи применены.")
 # --------------------------------
 
 from pyrogram import Client, filters, idle
@@ -30,78 +22,57 @@ from pytgcalls import PyTgCalls
 from pytgcalls.types import MediaStream
 import config
 
-# Инициализация Юзербота
+# Инициализация с огромным порогом ожидания
 app = Client(
     "userbot_railway",
-    api_id=config.API_ID,
-    api_hash=config.API_HASH,
-    session_string=config.SESSION_STRING,
-    sleep_threshold=180 # Авто-ожидание до 3 минут
+    api_id=API_ID,
+    api_hash=API_HASH,
+    session_string=SESSION_STRING,
+    sleep_threshold=1000 # Позволяем боту ждать очень долго
 )
 
 calls = PyTgCalls(app)
 
-@app.on_message(filters.chat(config.CHAT) & filters.command(["play", "stop", "pause", "resume"]) & (filters.me | filters.user(config.ADMINS)))
-async def command_handler(client, message):
-    if not message.text: return
-    cmd = message.command[0].lower()
-
-    if cmd == "play":
+@app.on_message(filters.chat(config.CHAT) & filters.command(["play", "stop"]) & (filters.me | filters.user(config.ADMINS)))
+async def handle_commands(client, message):
+    if message.command[0] == "play":
         if not message.reply_to_message or not message.reply_to_message.video:
-            return await message.reply("❌ Ответь на видео этой командой!")
-
-        status = await message.reply("⏳ Юзербот обрабатывает видео...")
-        path = os.path.join(config.DOWNLOAD_DIR, f"v_{message.id}.mp4")
-
+            return await message.reply("Ответь на видео!")
+        
+        status = await message.reply("⏳ Качаю...")
+        path = os.path.join(config.DOWNLOAD_DIR, f"{message.id}.mp4")
         try:
             file_path = await client.download_media(message.reply_to_message.video, file_name=path)
-            await status.edit("🚀 Запуск трансляции в видеочате...")
-            
+            await status.edit("🚀 Запускаю...")
             await calls.play(config.CHAT, MediaStream(file_path))
-            await status.edit("✅ Видео запущено!")
-            
+            await status.edit("✅ Играет!")
         except Exception as e:
-            print(f"[ERROR] {e}")
-            await status.edit(f"🔴 Ошибка:\n`{str(e)[:100]}`")
-            if os.path.exists(path): os.remove(path)
+            await status.edit(f"❌ Ошибка: {e}")
 
-    elif cmd == "stop":
-        try:
-            await calls.leave_call(config.CHAT)
-            await message.reply("⏹ Остановлено.")
-        except: pass
-
-    elif cmd == "pause":
-        await calls.pause(config.CHAT)
-        await message.reply("⏸ Пауза.")
-
-    elif cmd == "resume":
-        await calls.resume(config.CHAT)
-        await message.reply("▶️ Продолжено.")
+    elif message.command[0] == "stop":
+        await calls.leave_call(config.CHAT)
+        await message.reply("⏹ Стоп.")
 
 async def main():
-    print("--- ЗАПУСК ЮЗЕРБОТА НА RAILWAY ---")
+    print("--- СИСТЕМА ЗАПУСКАЕТСЯ ---")
     try:
-        # Шаг 1: Запуск клиента Pyrogram
+        # Мы НЕ вызываем get_me(), чтобы не тратить лимиты запросов
         await app.start()
-        print("✅ Аккаунт Krasavitsa подключен.")
+        print("1. Юзербот подключен.")
         
-        # Шаг 2: Пауза 10 секунд (чтобы Telegram не давал FloodWait)
-        print("⏳ Ждем 10 секунд перед запуском плеера...")
-        await asyncio.sleep(10)
+        await asyncio.sleep(5)
         
-        # Шаг 3: Запуск PyTgCalls
         await calls.start()
-        print(f"✅ Плеер активен в чате: {config.CHAT}")
+        print(f"2. Плеер готов. Чат: {config.CHAT}")
         
-        print("--- СИСТЕМА ПОЛНОСТЬЮ ГОТОВА ---")
+        print("--- БОТ В ОНЛАЙНЕ ---")
         await idle()
     except pyrogram.errors.FloodWait as e:
-        print(f"🔴 FloodWait: нужно подождать {e.value} секунд...")
-        await asyncio.sleep(e.value + 5)
+        print(f"!!! НУЖНО ПОДОЖДАТЬ {e.value} СЕКУНД !!!")
+        await asyncio.sleep(e.value + 10)
+        # Railway может убить процесс, но при следующем запуске время будет меньше
     except Exception as e:
-        print(f"❌ Ошибка запуска: {e}")
-        traceback.print_exc()
+        print(f"Ошибка старта: {e}")
     finally:
         try: await app.stop()
         except: pass
